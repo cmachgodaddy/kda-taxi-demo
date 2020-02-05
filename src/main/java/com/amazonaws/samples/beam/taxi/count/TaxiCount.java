@@ -17,6 +17,7 @@
 package com.amazonaws.samples.beam.taxi.count;
 
 import com.amazonaws.regions.Regions;
+import com.amazonaws.samples.beam.taxi.count.godaddy.KinesisClientsProvider;
 import com.amazonaws.samples.beam.taxi.count.kinesis.TripEvent;
 import com.amazonaws.services.kinesis.clientlibrary.lib.worker.InitialPositionInStream;
 import org.apache.beam.runners.flink.FlinkRunner;
@@ -29,6 +30,7 @@ import org.apache.beam.sdk.transforms.*;
 import org.apache.beam.sdk.transforms.windowing.*;
 import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
+import org.apache.beam.sdk.values.TypeDescriptor;
 import org.apache.commons.lang3.ArrayUtils;
 import org.joda.time.Duration;
 import org.joda.time.Instant;
@@ -42,7 +44,7 @@ public class TaxiCount {
   private static final Logger LOG = LoggerFactory.getLogger(TaxiCount.class);
 
   public static void main(String[] args) {
-    String[] kinesisArgs = TaxiCountOptions.argsFromKinesisApplicationProperties(args,"BeamApplicationProperties");
+    String[] kinesisArgs = TaxiCountOptions.argsFromKinesisApplicationProperties(args, "BeamApplicationProperties");
 
     TaxiCountOptions options = PipelineOptionsFactory.fromArgs(ArrayUtils.addAll(args, kinesisArgs)).as(TaxiCountOptions.class);
 
@@ -63,14 +65,22 @@ public class TaxiCount {
       case "kinesis":
         batchSize = 1;
 
-        input = p
+        //input = p
+        p
             .apply("Kinesis source", KinesisIO
                 .read()
                 .withStreamName(options.getInputStreamName())
-                .withAWSClientsProvider(new DefaultCredentialsProviderClientsProvider(Regions.fromName(options.getAwsRegion())))
+                //.withAWSClientsProvider(new DefaultCredentialsProviderClientsProvider(Regions.fromName(options.getAwsRegion())))
+                .withAWSClientsProvider(KinesisClientsProvider.of())
                 .withInitialPositionInStream(InitialPositionInStream.LATEST)
             )
-            .apply("Parse Kinesis events", ParDo.of(new EventParser.KinesisParser()));
+            .apply(MapElements.into(TypeDescriptor.of(String.class)).via(kinesisRecord -> {
+              String str = new String(kinesisRecord.getDataAsBytes());
+              LOG.info("Received records: " + str);
+              return str;
+            }));
+
+        //.apply("Parse Kinesis events", ParDo.of(new EventParser.KinesisParser()));
 
         LOG.info("Start consuming events from stream {}", options.getInputStreamName());
 
@@ -84,7 +94,7 @@ public class TaxiCount {
                 .read()
                 .from(options.getInputS3Pattern())
             )
-            .apply("Parse S3 events",ParDo.of(new EventParser.S3Parser()));
+            .apply("Parse S3 events", ParDo.of(new EventParser.S3Parser()));
 
         LOG.info("Start consuming events from s3 bucket {}", options.getInputS3Pattern());
 
@@ -95,71 +105,70 @@ public class TaxiCount {
     }
 
 
-    PCollection<TripEvent> window = input
-        .apply("Group into 5 second windows", Window
-            .<TripEvent>into(FixedWindows.of(Duration.standardSeconds(5)))
-            .triggering(AfterWatermark
-                .pastEndOfWindow()
-                .withEarlyFirings(AfterProcessingTime.pastFirstElementInPane().plusDelayOf(Duration.standardSeconds(15)))
-            )
-            .withAllowedLateness(Duration.ZERO)
-            .discardingFiredPanes()
-        );
+//    PCollection<TripEvent> window = input
+//        .apply("Group into 5 second windows", Window
+//            .<TripEvent>into(FixedWindows.of(Duration.standardSeconds(5)))
+//            .triggering(AfterWatermark
+//                .pastEndOfWindow()
+//                .withEarlyFirings(AfterProcessingTime.pastFirstElementInPane().plusDelayOf(Duration.standardSeconds(15)))
+//            )
+//            .withAllowedLateness(Duration.ZERO)
+//            .discardingFiredPanes()
+//        );
 
 
-    PCollection<Metric> metrics;
+//    PCollection<Metric> metrics;
+//
+//    if (!options.getOutputBoroughs()) {
+//      metrics = window
+//          .apply("Count globally", Combine
+//              .globally(Count.<TripEvent>combineFn())
+//              .withoutDefaults()
+//          )
+//          .apply("Map to Metric", ParDo.of(
+//              new DoFn<Long, Metric>() {
+//                @ProcessElement
+//                public void process(ProcessContext c) {
+//                  c.output(new Metric(c.element().longValue(), c.timestamp()));
+//                }
+//              }
+//          ));
+//    } else {
+//      metrics = window
+//          .apply("Partition by borough", ParDo.of(new PartitionByBorough()))
+//          .apply("Count per borough", Count.perKey())
+//          .apply("Map to Metric", ParDo.of(
+//              new DoFn<KV<String, Long>, Metric>() {
+//                @ProcessElement
+//                public void process(ProcessContext c) {
+//                  long count = c.element().getValue();
+//                  String borough = c.element().getKey();
+//                  Instant timestamp = c.timestamp();
+//
+//                  LOG.debug("adding metric for borough {}", borough);
+//
+//                  c.output(new Metric(count, borough, timestamp));
+//                }
+//              }
+//          ));
+//    }
 
-    if (! options.getOutputBoroughs()) {
-      metrics = window
-          .apply("Count globally", Combine
-              .globally(Count.<TripEvent>combineFn())
-              .withoutDefaults()
-          )
-          .apply("Map to Metric", ParDo.of(
-              new DoFn<Long, Metric>() {
-                @ProcessElement
-                public void process(ProcessContext c) {
-                  c.output(new Metric(c.element().longValue(), c.timestamp()));
-                }
-              }
-          ));
-    } else {
-      metrics = window
-          .apply("Partition by borough", ParDo.of(new PartitionByBorough()))
-          .apply("Count per borough", Count.perKey())
-          .apply("Map to Metric", ParDo.of(
-              new DoFn<KV<String, Long>, Metric>() {
-                @ProcessElement
-                public void process(ProcessContext c) {
-                  long count = c.element().getValue();
-                  String borough = c.element().getKey();
-                  Instant timestamp = c.timestamp();
 
-                  LOG.debug("adding metric for borough {}", borough);
-
-                  c.output(new Metric(count, borough, timestamp));
-                }
-              }
-          ));
-    }
-
-
-    String streamName = options.getInputStreamName()==null ? "Unknown" : options.getInputStreamName();
-    Dimension dimension = Dimension.builder().name("StreamName").value(streamName).build();
-
-    metrics
-        .apply("Void key", WithKeys.of((Void) null))
-        .apply("Global Metric window", Window.<KV<Void, Metric>>into(new GlobalWindows())
-            .triggering(Repeatedly.forever(AfterFirst.of(
-                AfterPane.elementCountAtLeast(20),
-                AfterProcessingTime.pastFirstElementInPane().plusDelayOf(Duration.standardSeconds(1)))))
-            .discardingFiredPanes()
-        )
-        .apply("Group into batches", GroupIntoBatches.ofSize(batchSize))
-        .apply("CloudWatch sink", ParDo.of(new CloudWatchSink(dimension)));
+//    String streamName = options.getInputStreamName() == null ? "Unknown" : options.getInputStreamName();
+//    Dimension dimension = Dimension.builder().name("StreamName").value(streamName).build();
+//
+//    metrics
+//        .apply("Void key", WithKeys.of((Void) null))
+//        .apply("Global Metric window", Window.<KV<Void, Metric>>into(new GlobalWindows())
+//            .triggering(Repeatedly.forever(AfterFirst.of(
+//                AfterPane.elementCountAtLeast(20),
+//                AfterProcessingTime.pastFirstElementInPane().plusDelayOf(Duration.standardSeconds(1)))))
+//            .discardingFiredPanes()
+//        )
+//        .apply("Group into batches", GroupIntoBatches.ofSize(batchSize))
+//        .apply("CloudWatch sink", ParDo.of(new CloudWatchSink(dimension)));
 
 
     p.run().waitUntilFinish();
   }
-
 }
