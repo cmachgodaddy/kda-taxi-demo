@@ -26,7 +26,7 @@
 
   <properties>
     <beam.version>2.13.0</beam.version>
-    <flink.version>1.6</flink.version>
+    <flink.version>1.8</flink.version>
     <kda.version>1.0.1</kda.version>
     <hadoop.version>2.8.5</hadoop.version>
     <slf4j.version>1.7.25</slf4j.version>
